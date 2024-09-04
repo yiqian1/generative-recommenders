@@ -223,7 +223,6 @@ def _get_fw_configs() -> List[triton.Config]:  # noqa: C901
         ]
     return configs
 
-
 @triton.jit
 def _ragged_hstu_attn_fwd_one_block(  # noqa: C901
     start_n,
@@ -501,14 +500,16 @@ def _ragged_hstu_attn_fwd(  # noqa C901
                 block_shape=(BLOCK_D_Q, BLOCK_N),
                 order=(0, 1),
             )
+
             V_block_ptr = tl.make_block_ptr(
                 base=V + off_h * stride_vh + seq_start * stride_vn,
-                shape=(seq_len, BLOCK_D_V),
-                strides=(stride_vn, 1),
+                shape=(BLOCK_D_V, seq_len),
+                strides=(1, stride_vn),
                 offsets=(0, 0),
                 block_shape=(BLOCK_N, BLOCK_D_V),
-                order=(1, 0),
+                order=(0, 1),
             )
+
             mask_m = offs_m < seq_len
             if ATTN_BIAS_TYPE == "fused" and USE_TIME_BIAS:
                 ts_0_ptrs = TS + off_z * stride_ts + offs_m
@@ -546,7 +547,6 @@ def _ragged_hstu_attn_fwd(  # noqa C901
                     high = seq_len
                     K_block_ptr = tl.advance(K_block_ptr, (0, low))
                     V_block_ptr = tl.advance(V_block_ptr, (low, 0))
-
             # pyre-ignore[61]
             for start_n in range(low, high, BLOCK_N):
                 boundary_check = (start_n > high - BLOCK_N) or (start_n > seq_len - BLOCK_N)
@@ -712,11 +712,11 @@ class _RaggedAttentionFunction(torch.autograd.Function):
         assert invalid_attn_mask_type in ["lower_triangular", "upper_triangular"]
         Z = seq_offsets.numel() - 1
         L, H, DimQ = q.shape
-        _, _, DimV = v.shape
+        _, DimV, _ = v.shape
 
         # print(f"grid: N = {N}, Z = {Z}, H = {H}, DimQ = {DimQ}, DimV = {DimV}")
 
-        out = torch.empty_like(v)
+        out = torch.empty_like(v.permute(0,2,1))
         has_multiple_targets = num_targets is not None
         has_attn_bias = attn_bias is not None
         has_attn_scale = attn_scale is not None
@@ -827,8 +827,9 @@ class _RaggedAttentionRelativeBiasFunction(torch.autograd.Function):
         has_multiple_targets = num_targets is not None
         has_max_pos_id = max_pos_ind is not None
         _, H, DimQ = q.shape
-        _, _, DimV = v.shape
-        out = torch.empty_like(v)
+        _, DimV, _ = v.shape
+
+        out = torch.empty_like(v.permute(0,2,1))
         # print(f"grid: N = {N}, Z = {Z}, H = {H}, DimQ = {DimQ}, DimV = {DimV}")
         grid = (1216, )
 

@@ -71,7 +71,7 @@ def generate_hstu_timestamps(batch_size: int, seq_len: int) -> torch.Tensor:
     return timestamps.long()
 
 
-def gen_inputs(dtype, attn_dim, batch_size, actual_seq_len, target_size, heads, hidden_dim, num_buckets, max_pos_ind):
+def gen_inputs(dtype, attn_dim, batch_size, actual_seq_len, target_size, heads, hidden_dim, num_buckets, max_pos_ind, gen_transV):
     lengths = torch.zeros(batch_size, device=torch.device("cuda")) + actual_seq_len
     lengths = lengths + target_size
     num_targets = torch.randint(
@@ -94,8 +94,11 @@ def gen_inputs(dtype, attn_dim, batch_size, actual_seq_len, target_size, heads, 
     )
     q = q.view(-1, heads, attn_dim)
     k = q.view(-1, heads, attn_dim)
-    v = q.view(-1, heads, hidden_dim)
-    # print(f"x = {x.shape}, q = {q.shape}, k = {k.shape}, v = {k.shape}")
+    if (gen_transV):
+      v = q.view(-1, hidden_dim, heads)
+    else:
+      v = q.view(-1, heads, hidden_dim)
+    # print(f"x = {x.shape}, q = {q.shape}, k = {k.shape}, v = {v.shape}")
     # print(f"q_stride = ({q.stride(0)}, {q.stride(1)}, {q.stride(2)})")
     # print(f"k_stride = ({k.stride(0)}, {k.stride(1)}, {v.stride(2)})")
     # print(f"v_stride = ({v.stride(0)}, {v.stride(1)}, {v.stride(2)})")
@@ -164,10 +167,9 @@ def main(
     time_bucket_incr = 60
     time_bucket_div = 1.0
 
-    lengths, num_targets, seq_offsets, u, v, q, k, ts_weights, pos_weights = gen_inputs(dtype, attn_dim, batch_size, actual_seq_len, target_size, heads, hidden_dim, num_buckets, max_pos_ind)
+    lengths, num_targets, seq_offsets, u, v, q, k, ts_weights, pos_weights = gen_inputs(dtype, attn_dim, batch_size, actual_seq_len, target_size, heads, hidden_dim, num_buckets, max_pos_ind, True)
     timestamps = generate_hstu_timestamps(batch_size, int(lengths.max().item()))
     relative_bias_type = "ALL"
-
     if not no_relative_bias:
         fn = lambda: _RaggedAttentionRelativeBiasFunction.apply(
             max_seq_len,
@@ -211,15 +213,20 @@ def main(
         ms, min_ms, max_ms = triton.testing.do_bench(
             fn, warmup=warmup, rep=rep, quantiles=quantiles
         )
+    total_flops = 2 * 2.0 * min(max_seq_len, actual_seq_len+target_size) * batch_size * heads * attn_dim * hidden_dim 
+    flops_ms = total_flops / ms * 1e-9
+    flops_min = total_flops / min_ms * 1e-9
+    flops_max = total_flops / max_ms * 1e-9
     print(
-        f"P50 latency is {ms:.5f} ms\n"
-        f"P20 latency is {min_ms:.5f} ms\n"
-        f"P80 latency is {max_ms:.5f} ms"
+        f"P50 latency is {ms:.5f} ms; TFLOPS: {flops_ms:.2f}\n"
+        f"P20 latency is {min_ms:.5f} ms; TFLOPS: {flops_min:.2f}\n"
+        f"P80 latency is {max_ms:.5f} ms; TFLOPS: {flops_max:.2f}\n"
     )
 
 
 if __name__ == "__main__":
     main()
+    #test_correctness()
 
 
 @pytest.mark.parametrize("batch_size, heads, attn_dim, hidden_dim, max_seq_len, actual_seq_len, target_size, max_pos_ind, no_relative_bias",
@@ -244,7 +251,7 @@ def test_correctness(
     invalid_attn_mask_type = "lower_triangular"
     num_buckets = 2048
 
-    lengths, num_targets, seq_offsets, u, v, q, k, ts_weights, pos_weights = gen_inputs(dtype, attn_dim, batch_size, actual_seq_len, target_size, heads, hidden_dim, num_buckets, max_pos_ind)
+    lengths, num_targets, seq_offsets, u, v, q, k, ts_weights, pos_weights = gen_inputs(dtype, attn_dim, batch_size, actual_seq_len, target_size, heads, hidden_dim, num_buckets, max_pos_ind, False)
 
     causal = True
     time_delta = 0.01
@@ -255,6 +262,7 @@ def test_correctness(
     relative_bias_type = "ALL"
 
     if not no_relative_bias:
+
         out_ref = _RaggedAttentionRelativeBiasFunction_ref.apply(
             max_seq_len,
             alpha,
@@ -278,6 +286,7 @@ def test_correctness(
             relative_bias_type,
         )
 
+        v = v.permute(0, 2, 1)
         out = _RaggedAttentionRelativeBiasFunction.apply(
             max_seq_len,
             alpha,
@@ -301,6 +310,7 @@ def test_correctness(
             relative_bias_type,
         )
 
+
     else:
         out_ref = _RaggedAttentionFunction_ref.apply(
             max_seq_len,
@@ -316,6 +326,7 @@ def test_correctness(
             None,
         )
 
+        v = v.permute(0, 2, 1)
         out = _RaggedAttentionFunction.apply(
             max_seq_len,
             alpha,
