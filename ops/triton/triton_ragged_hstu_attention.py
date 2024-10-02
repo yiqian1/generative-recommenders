@@ -547,9 +547,13 @@ def _ragged_hstu_attn_fwd(  # noqa C901
                     K_block_ptr = tl.advance(K_block_ptr, (0, low))
                     V_block_ptr = tl.advance(V_block_ptr, (low, 0))
 
+            iters = min(high, seq_len) // BLOCK_N
+            # this is necessary to ensure correctness, but it causes a compilation error.
+            #if iters> 0:  # this will cause a compilation error
             # pyre-ignore[61]
-            for start_n in range(low, high, BLOCK_N):
-                boundary_check = (start_n > high - BLOCK_N) or (start_n > seq_len - BLOCK_N)
+            #for start_n in range(low, high, BLOCK_N):
+            for start_n in range(low, iters * BLOCK_N, BLOCK_N):
+                #boundary_check = (start_n > high - BLOCK_N) or (start_n > seq_len - BLOCK_N)
                 acc += _ragged_hstu_attn_fwd_one_block(
                     start_n=start_n,
                     seq_len=seq_len,
@@ -595,11 +599,63 @@ def _ragged_hstu_attn_fwd(  # noqa C901
                     ALLOW_TF32=ALLOW_TF32,
                     BLOCK_M=BLOCK_M,
                     BLOCK_N=BLOCK_N,
-                    BOUNDARY_CHECK=boundary_check,
+                    BOUNDARY_CHECK=False,
                 )
                 K_block_ptr = tl.advance(K_block_ptr, (0, BLOCK_N))
                 V_block_ptr = tl.advance(V_block_ptr, (BLOCK_N, 0))
-
+             
+            for start_n in range(low + iters*BLOCK_N, high, BLOCK_N): 
+                #boundary_check = (start_n > high - BLOCK_N) or (start_n > seq_len - BLOCK_N)
+                acc += _ragged_hstu_attn_fwd_one_block(
+                    start_n=start_n,
+                    seq_len=seq_len,
+                    offs_m=offs_m,
+                    offs_n=offs_n,
+                    mask_m=mask_m,
+                    q=q,
+                    K_block_ptr=K_block_ptr,
+                    V_block_ptr=V_block_ptr,
+                    # pyre-ignore[61]
+                    n_targets=n_targets if HAS_MULTIPLE_TARGETS else None,
+                    ts_1_ptrs=(
+                        # pyre-ignore[61]
+                        ts_1_ptrs
+                        if ATTN_BIAS_TYPE == "fused" and USE_TIME_BIAS
+                        else None
+                    ),
+                    # pyre-ignore[61]
+                    ts_0=ts_0 if ATTN_BIAS_TYPE == "fused" and USE_TIME_BIAS else None,
+                    TW=TW,
+                    PW=PW,
+                    alpha=alpha,
+                    MAX_SEQ_LEN=MAX_SEQ_LEN,
+                    num_buckets=num_buckets,
+                    max_pos_ind=max_pos_ind,
+                    time_bucket_incr=time_bucket_incr,
+                    time_bucket_div=time_bucket_div,
+                    time_delta=time_delta,
+                    # pyre-ignore[61]
+                    bias_ptrs=bias_ptrs if ATTN_BIAS_TYPE == "separate" else None,
+                    # pyre-ignore[61]
+                    attn_scale=attn_scale if HAS_ATTN_SCALE else None,
+                    INVALID_MASK_TYPE=INVALID_MASK_TYPE,
+                    CAUSAL=CAUSAL,
+                    BUCKET_FN=BUCKET_FN,
+                    ATTN_BIAS_TYPE=ATTN_BIAS_TYPE,
+                    USE_TIME_BIAS=USE_TIME_BIAS,
+                    USE_POS_BIAS=USE_POS_BIAS,
+                    HAS_MAX_POS_IND=HAS_MAX_POS_IND,
+                    HAS_MULTIPLE_TARGETS=HAS_MULTIPLE_TARGETS,
+                    HAS_ATTN_SCALE=HAS_ATTN_SCALE,
+                    IS_DELTA_Q=IS_DELTA_Q,
+                    ALLOW_TF32=ALLOW_TF32,
+                    BLOCK_M=BLOCK_M,
+                    BLOCK_N=BLOCK_N,
+                    BOUNDARY_CHECK=True,
+                )
+                K_block_ptr = tl.advance(K_block_ptr, (0, BLOCK_N))
+                V_block_ptr = tl.advance(V_block_ptr, (BLOCK_N, 0))
+             
             if HAS_MULTIPLE_TARGETS and INVALID_MASK_TYPE == "lower_triangular":
                 # pyre-ignore[61]
                 if uih_end < start_m:
